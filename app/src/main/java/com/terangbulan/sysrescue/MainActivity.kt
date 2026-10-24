@@ -1,116 +1,358 @@
 package com.terangbulan.sysrescue
 
 import android.app.Activity
-import android.os.Bundle
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.os.Build
+import android.os.Bundle
 import android.graphics.Typeface
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var devices: LinearLayout
-    private lateinit var browserButton: Button
+    private lateinit var console: TextView
+    private lateinit var logScroll: ScrollView
+
+    private val logLines = ArrayDeque<String>()
+    private var permissionPending = false
 
     private val usbManager: UsbManager
         get() = getSystemService(Context.USB_SERVICE) as UsbManager
 
+    companion object {
+        private const val ACTION_USB_PERMISSION =
+            "com.terangbulan.sysrescue.USB_PERMISSION"
+        private const val MAX_LOG_LINES = 200
+    }
+
+    private val permissionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ACTION_USB_PERMISSION) return
+
+            permissionPending = false
+            val device = if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(
+                    UsbManager.EXTRA_DEVICE, UsbDevice::class.java
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+            }
+
+            val granted = intent.getBooleanExtra(
+                UsbManager.EXTRA_PERMISSION_GRANTED, false
+            )
+
+            if (device != null) {
+                log(
+                    if (granted) "USB permission DIIZINKAN"
+                    else "USB permission DITOLAK",
+                    "Device=${device.deviceName} VID=${device.vendorId} PID=${device.productId}"
+                )
+            } else {
+                log("USB permission callback", "Device tidak dikirim Android")
+            }
+
+            scanUsb(requestAutomatically = false)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         createUi()
-        scanUsb()
+
+        val filter = IntentFilter(ACTION_USB_PERMISSION)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(
+                permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(permissionReceiver, filter)
+        }
+
+        log("SYSrescue dimulai", "Menyiapkan USB Host dan console")
+        scanUsb(requestAutomatically = true)
     }
 
     private fun createUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 28, 24, 20)
+            setPadding(20, 20, 20, 12)
         }
 
         val title = TextView(this).apply {
-            text = "OTG ADB FILE MANAGER"
+            text = "SYSrescue · USB / ADB"
             textSize = 23f
             typeface = Typeface.DEFAULT_BOLD
         }
 
         status = TextView(this).apply {
-            textSize = 15f
-            setPadding(0, 20, 0, 12)
+            textSize = 14f
+            setPadding(0, 12, 0, 10)
         }
 
         val refresh = Button(this).apply {
             text = "DETEKSI ULANG USB"
-            setOnClickListener { scanUsb() }
-        }
-
-        browserButton = Button(this).apply {
-            text = "BROWSER DEVICE B"
-            isEnabled = false
             setOnClickListener {
-                status.text =
-                    "ADB belum terhubung. Deteksi USB saja belum " +
-                    "membuktikan sesi ADB sudah aktif."
+                log("SCAN", "Pemindaian USB manual")
+                scanUsb(requestAutomatically = true)
             }
         }
 
         val heading = TextView(this).apply {
             text = "Perangkat USB"
-            textSize = 19f
+            textSize = 18f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, 18, 0, 8)
+            setPadding(0, 8, 0, 4)
         }
 
         devices = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
-        val scroll = ScrollView(this).apply {
+        val deviceScroll = ScrollView(this).apply {
             addView(devices)
+        }
+
+        val consoleHeading = TextView(this).apply {
+            text = "Console log"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 8, 0, 4)
+        }
+
+        val copyButton = Button(this).apply {
+            text = "COPY LOG"
+            setOnClickListener {
+                val text = logLines.joinToString("\n")
+                if (text.isBlank()) {
+                    Toast.makeText(
+                        this@MainActivity, "Log masih kosong",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    val clipboard =
+                        getSystemService(Context.CLIPBOARD_SERVICE)
+                            as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("SYSrescue console log", text)
+                    )
+                    Toast.makeText(
+                        this@MainActivity, "Console log disalin",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    log("INFO", "Log disalin ke clipboard")
+                }
+            }
+        }
+
+        val clearButton = Button(this).apply {
+            text = "CLEAR LOG"
+            setOnClickListener {
+                logLines.clear()
+                refreshConsole()
+                log("INFO", "Console dibersihkan")
+            }
+        }
+
+        val logButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(copyButton, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(clearButton, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+
+        console = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(10, 10, 10, 10)
+        }
+
+        logScroll = ScrollView(this).apply {
+            setBackgroundColor(0xFF15191E.toInt())
+            addView(console)
         }
 
         root.addView(title)
         root.addView(status)
         root.addView(refresh)
-        root.addView(browserButton)
         root.addView(heading)
         root.addView(
-            scroll,
+            deviceScroll,
             LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f
             )
         )
+        root.addView(consoleHeading)
+        root.addView(logButtons)
+        root.addView(
+            logScroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(190)
+            )
+        )
+
         setContentView(root)
     }
 
-    private fun scanUsb() {
+    private fun scanUsb(requestAutomatically: Boolean) {
         devices.removeAllViews()
-        browserButton.isEnabled = false
 
         val list = usbManager.deviceList.values.toList()
+        log("SCAN", "Ditemukan ${list.size} perangkat USB")
+
         status.text = if (list.isEmpty()) {
-            "USB belum terdeteksi. Periksa OTG dan kabel."
+            "USB tidak terdeteksi. Periksa OTG, kabel, dan mode USB."
         } else {
-            "${list.size} perangkat USB ditemukan. Status ADB belum diuji."
+            "${list.size} perangkat ditemukan. Periksa status izin di bawah."
         }
 
+        var deviceToRequest: UsbDevice? = null
+
         list.forEachIndexed { index, device ->
-            val row = TextView(this).apply {
+            val granted = usbManager.hasPermission(device)
+
+            log(
+                "USB",
+                "${device.deviceName} VID=${device.vendorId} " +
+                    "PID=${device.productId} permission=$granted"
+            )
+
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(10, 8, 10, 8)
+            }
+
+            val details = TextView(this).apply {
                 text = """
                     ${index + 1}. ${device.deviceName}
                     Vendor ID: ${device.vendorId}
                     Product ID: ${device.productId}
-                    USB permission: ${usbManager.hasPermission(device)}
+                    USB permission: $granted
                 """.trimIndent()
                 textSize = 14f
-                setPadding(12, 14, 12, 14)
             }
+
+            val requestButton = Button(this).apply {
+                text = if (granted) "IZIN USB AKTIF"
+                    else "MINTA IZIN USB"
+                isEnabled = !granted
+                setOnClickListener {
+                    requestUsbPermission(device)
+                }
+            }
+
+            row.addView(details)
+            row.addView(requestButton)
             devices.addView(row)
+
+            if (!granted && deviceToRequest == null) {
+                deviceToRequest = device
+            }
         }
+
+        if (requestAutomatically &&
+            !permissionPending &&
+            deviceToRequest != null
+        ) {
+            requestUsbPermission(deviceToRequest!!)
+        }
+
+        if (list.isEmpty()) {
+            log("USB", "Tidak ada device untuk dimintai izin")
+        }
+    }
+
+    private fun requestUsbPermission(device: UsbDevice) {
+        if (usbManager.hasPermission(device)) {
+            log("USB", "Izin sudah aktif untuk ${device.deviceName}")
+            scanUsb(requestAutomatically = false)
+            return
+        }
+
+        if (permissionPending) {
+            log("USB", "Permintaan izin sebelumnya masih menunggu")
+            return
+        }
+
+        try {
+            val intent = Intent(ACTION_USB_PERMISSION).apply {
+                setPackage(packageName)
+            }
+
+            var flags = PendingIntent.FLAG_UPDATE_CURRENT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                flags = flags or PendingIntent.FLAG_MUTABLE
+            }
+
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, device.deviceId, intent, flags
+            )
+
+            permissionPending = true
+            log(
+                "USB",
+                "Meminta izin sistem untuk ${device.deviceName} " +
+                    "VID=${device.vendorId} PID=${device.productId}"
+            )
+            usbManager.requestPermission(device, pendingIntent)
+            status.text =
+                "Permintaan izin USB dikirim. Periksa dialog sistem."
+        } catch (e: Exception) {
+            permissionPending = false
+            log(
+                "ERROR",
+                "Gagal meminta izin USB: ${e.javaClass.simpleName}: ${e.message}"
+            )
+            status.text = "Gagal meminta izin USB. Periksa console log."
+        }
+    }
+
+    private fun log(tag: String, message: String) {
+        val time = SimpleDateFormat(
+            "HH:mm:ss", Locale.getDefault()
+        ).format(Date())
+
+        logLines.addLast("[$time] [$tag] $message")
+        while (logLines.size > MAX_LOG_LINES) {
+            logLines.removeFirst()
+        }
+        refreshConsole()
+    }
+
+    private fun refreshConsole() {
+        if (!::console.isInitialized) return
+        console.text = logLines.joinToString("\n")
+        if (::logScroll.isInitialized) {
+            logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(permissionReceiver)
+        } catch (_: Exception) {
+        }
+        super.onDestroy()
     }
 }

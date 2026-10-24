@@ -1,0 +1,683 @@
+SYSRESCUE FULL AUDIT
+
+===== WAKTU DAN REPOSITORY =====
+Sat Oct 24 08:51:21 WIB 2026
+master
+3b5d7b6 Add Gradle build auto diagnostics
+ M app/build.gradle.kts
+ M app/src/main/AndroidManifest.xml
+?? .cache/
+?? .github/workflows/android.yml.bak
+?? .github/workflows/android.yml.bak2
+?? .github/workflows/android.yml.before-repair
+?? .github/workflows/android.yml.before-sdk-final
+?? SYSrescue_FULL_AUDIT.txt
+?? app/src/main/res/xml/
+?? backups/
+
+===== STRUKTUR FILE =====
+.github/workflows/android.yml
+.github/workflows/android.yml.bak
+.github/workflows/android.yml.bak2
+.github/workflows/android.yml.before-repair
+.github/workflows/android.yml.before-sdk-final
+app/src/main/AndroidManifest.xml
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt
+app/src/main/java/com/terangbulan/sysrescue/adb/AdbSession.kt
+app/src/main/java/com/terangbulan/sysrescue/files/RemoteFile.kt
+app/src/main/java/com/terangbulan/sysrescue/transfer/TransferModels.kt
+app/src/main/res/drawable-nodpi/sysrescue_logo.png
+app/src/main/res/values/strings.xml
+app/src/main/res/xml/device_filter.xml
+
+===== GRADLE APP =====
+     1	plugins {
+     2	    id("com.android.application")
+     3	    id("org.jetbrains.kotlin.android")
+     4	}
+     5	
+     6	android {
+     7	    compileOptions {
+     8	        sourceCompatibility = JavaVersion.VERSION_17
+     9	        targetCompatibility = JavaVersion.VERSION_17
+    10	    }
+    11	
+    12	    namespace = "com.terangbulan.sysrescue"
+    13	    compileSdk = 35
+    14	
+    15	    defaultConfig {
+    16	        applicationId = "com.terangbulan.sysrescue"
+    17	        minSdk = 23
+    18	        targetSdk = 28
+    19	        versionCode = 1
+    20	        versionName = "0.1.0"
+    21	    }
+    22	}
+    23	
+    24	dependencies {
+    25	    implementation("com.flyfishxu:kadb:2.1.5")
+    26	    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    27	}
+
+===== ROOT GRADLE / SETTINGS =====
+--- settings.gradle.kts ---
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "otg-adb-file-manager"
+include(":app")
+--- build.gradle.kts ---
+plugins {
+    id("com.android.application") version "8.13.2" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.21" apply false
+}
+--- gradle.properties ---
+org.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8
+org.gradle.parallel=false
+android.useAndroidX=true
+kotlin.code.style=official
+
+===== MANIFEST =====
+<?xml version='1.0' encoding='utf-8'?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
+    <application android:allowBackup="false" android:label="SYSrescue" android:theme="@android:style/Theme.Material.NoActionBar" android:icon="@drawable/sysrescue_logo">
+
+        <activity android:name=".MainActivity" android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        <intent-filter><action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" /></intent-filter><meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/device_filter" /></activity>
+    </application>
+</manifest>
+===== RESOURCE XML =====
+--- app/src/main/res/xml/device_filter.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <usb-device vendor-id="3725" />
+</resources>
+
+===== SUMBER KOTLIN/JAVA =====
+--- app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt ---
+package com.terangbulan.sysrescue
+
+import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.os.Build
+import android.os.Bundle
+import android.graphics.Typeface
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class MainActivity : Activity() {
+    private lateinit var status: TextView
+    private lateinit var devices: LinearLayout
+    private lateinit var console: TextView
+    private lateinit var logScroll: ScrollView
+
+    private val logLines = ArrayDeque<String>()
+    private var permissionPending = false
+
+    private val usbManager: UsbManager
+        get() = getSystemService(Context.USB_SERVICE) as UsbManager
+
+    companion object {
+        private const val ACTION_USB_PERMISSION =
+            "com.terangbulan.sysrescue.USB_PERMISSION"
+        private const val MAX_LOG_LINES = 200
+    }
+
+    private val permissionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ACTION_USB_PERMISSION) return
+
+            permissionPending = false
+            val device = if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(
+                    UsbManager.EXTRA_DEVICE, UsbDevice::class.java
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+            }
+
+            val granted = intent.getBooleanExtra(
+                UsbManager.EXTRA_PERMISSION_GRANTED, false
+            )
+
+            if (device != null) {
+                log(
+                    if (granted) "USB permission DIIZINKAN"
+                    else "USB permission DITOLAK",
+                    "Device=${device.deviceName} VID=${device.vendorId} PID=${device.productId}"
+                )
+            } else {
+                log("USB permission callback", "Device tidak dikirim Android")
+            }
+
+            scanUsb(requestAutomatically = false)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        createUi()
+
+        val filter = IntentFilter(ACTION_USB_PERMISSION)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(
+                permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(permissionReceiver, filter)
+        }
+
+        log("SYSrescue dimulai", "Menyiapkan USB Host dan console")
+        scanUsb(requestAutomatically = true)
+    }
+
+    private fun createUi() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20, 20, 20, 12)
+        }
+
+        val title = TextView(this).apply {
+            text = "SYSrescue · USB / ADB"
+            textSize = 23f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+
+        status = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 12, 0, 10)
+        }
+
+        val refresh = Button(this).apply {
+            text = "DETEKSI ULANG USB"
+            setOnClickListener {
+                log("SCAN", "Pemindaian USB manual")
+                scanUsb(requestAutomatically = true)
+            }
+        }
+
+        val heading = TextView(this).apply {
+            text = "Perangkat USB"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 8, 0, 4)
+        }
+
+        devices = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val deviceScroll = ScrollView(this).apply {
+            addView(devices)
+        }
+
+        val consoleHeading = TextView(this).apply {
+            text = "Console log"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 8, 0, 4)
+        }
+
+        val copyButton = Button(this).apply {
+            text = "COPY LOG"
+            setOnClickListener {
+                val text = logLines.joinToString("\n")
+                if (text.isBlank()) {
+                    Toast.makeText(
+                        this@MainActivity, "Log masih kosong",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    val clipboard =
+                        getSystemService(Context.CLIPBOARD_SERVICE)
+                            as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("SYSrescue console log", text)
+                    )
+                    Toast.makeText(
+                        this@MainActivity, "Console log disalin",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    log("INFO", "Log disalin ke clipboard")
+                }
+            }
+        }
+
+        val clearButton = Button(this).apply {
+            text = "CLEAR LOG"
+            setOnClickListener {
+                logLines.clear()
+                refreshConsole()
+                log("INFO", "Console dibersihkan")
+            }
+        }
+
+        val logButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(copyButton, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(clearButton, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+
+        console = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(10, 10, 10, 10)
+        }
+
+        logScroll = ScrollView(this).apply {
+            setBackgroundColor(0xFF15191E.toInt())
+            addView(console)
+        }
+
+        root.addView(title)
+        root.addView(status)
+        root.addView(refresh)
+        root.addView(heading)
+        root.addView(
+            deviceScroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f
+            )
+        )
+        root.addView(consoleHeading)
+        root.addView(logButtons)
+        root.addView(
+            logScroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(190)
+            )
+        )
+
+        setContentView(root)
+    }
+
+    private fun scanUsb(requestAutomatically: Boolean) {
+        devices.removeAllViews()
+
+        val list = usbManager.deviceList.values.toList()
+        log("SCAN", "Ditemukan ${list.size} perangkat USB")
+
+        status.text = if (list.isEmpty()) {
+            "USB tidak terdeteksi. Periksa OTG, kabel, dan mode USB."
+        } else {
+            "${list.size} perangkat ditemukan. Periksa status izin di bawah."
+        }
+
+        var deviceToRequest: UsbDevice? = null
+
+        list.forEachIndexed { index, device ->
+            val granted = usbManager.hasPermission(device)
+
+            log(
+                "USB",
+                "${device.deviceName} VID=${device.vendorId} " +
+                    "PID=${device.productId} permission=$granted"
+            )
+
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(10, 8, 10, 8)
+            }
+
+            val details = TextView(this).apply {
+                text = """
+                    ${index + 1}. ${device.deviceName}
+                    Vendor ID: ${device.vendorId}
+                    Product ID: ${device.productId}
+                    USB permission: $granted
+                """.trimIndent()
+                textSize = 14f
+            }
+
+            val requestButton = Button(this).apply {
+                text = if (granted) "IZIN USB AKTIF"
+                    else "MINTA IZIN USB"
+                isEnabled = !granted
+                setOnClickListener {
+                    requestUsbPermission(device)
+                }
+            }
+
+            row.addView(details)
+            row.addView(requestButton)
+            devices.addView(row)
+
+            if (!granted && deviceToRequest == null) {
+                deviceToRequest = device
+            }
+        }
+
+        if (requestAutomatically &&
+            !permissionPending &&
+            deviceToRequest != null
+        ) {
+            requestUsbPermission(deviceToRequest!!)
+        }
+
+        if (list.isEmpty()) {
+            log("USB", "Tidak ada device untuk dimintai izin")
+        }
+    }
+
+    private fun requestUsbPermission(device: UsbDevice) {
+        if (usbManager.hasPermission(device)) {
+            log("USB", "Izin sudah aktif untuk ${device.deviceName}")
+            scanUsb(requestAutomatically = false)
+            return
+        }
+
+        if (permissionPending) {
+            log("USB", "Permintaan izin sebelumnya masih menunggu")
+            return
+        }
+
+        try {
+            val intent = Intent(ACTION_USB_PERMISSION).apply {
+                setPackage(packageName)
+            }
+
+            var flags = PendingIntent.FLAG_UPDATE_CURRENT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                flags = flags or PendingIntent.FLAG_MUTABLE
+            }
+
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, device.deviceId, intent, flags
+            )
+
+            permissionPending = true
+            log(
+                "USB",
+                "Meminta izin sistem untuk ${device.deviceName} " +
+                    "VID=${device.vendorId} PID=${device.productId}"
+            )
+            usbManager.requestPermission(device, pendingIntent)
+            status.text =
+                "Permintaan izin USB dikirim. Periksa dialog sistem."
+        } catch (e: Exception) {
+            permissionPending = false
+            log(
+                "ERROR",
+                "Gagal meminta izin USB: ${e.javaClass.simpleName}: ${e.message}"
+            )
+            status.text = "Gagal meminta izin USB. Periksa console log."
+        }
+    }
+
+    private fun log(tag: String, message: String) {
+        val time = SimpleDateFormat(
+            "HH:mm:ss", Locale.getDefault()
+        ).format(Date())
+
+        logLines.addLast("[$time] [$tag] $message")
+        while (logLines.size > MAX_LOG_LINES) {
+            logLines.removeFirst()
+        }
+        refreshConsole()
+    }
+
+    private fun refreshConsole() {
+        if (!::console.isInitialized) return
+        console.text = logLines.joinToString("\n")
+        if (::logScroll.isInitialized) {
+            logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(permissionReceiver)
+        } catch (_: Exception) {
+        }
+        super.onDestroy()
+    }
+}
+--- app/src/main/java/com/terangbulan/sysrescue/adb/AdbSession.kt ---
+package com.terangbulan.sysrescue.adb
+
+/**
+ * Kontrak sesi ADB.
+ *
+ * Implementasi nyata harus menyediakan USB transport,
+ * handshake, autentikasi host key, pengelolaan koneksi,
+ * serta operasi shell dan file-sync.
+ */
+interface AdbSession {
+    val isConnected: Boolean
+
+    suspend fun connect(): Result<Unit>
+
+    suspend fun disconnect()
+}
+--- app/src/main/java/com/terangbulan/sysrescue/files/RemoteFile.kt ---
+package com.terangbulan.sysrescue.files
+
+data class RemoteFile(
+    val name: String,
+    val path: String,
+    val isDirectory: Boolean,
+    val sizeBytes: Long = 0L
+)
+
+interface RemoteFileRepository {
+    suspend fun list(path: String): List<RemoteFile>
+}
+--- app/src/main/java/com/terangbulan/sysrescue/transfer/TransferModels.kt ---
+package com.terangbulan.sysrescue.transfer
+
+enum class TransferDirection {
+    DEVICE_A_TO_B,
+    DEVICE_B_TO_A
+}
+
+data class TransferProgress(
+    val currentItem: String,
+    val completedItems: Int,
+    val totalItems: Int,
+    val transferredBytes: Long,
+    val totalBytes: Long,
+    val bytesPerSecond: Long,
+    val finished: Boolean = false,
+    val error: String? = null
+)
+
+===== GITHUB WORKFLOWS =====
+--- .github/workflows/android.yml ---
+name: SYSrescue Android Build
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build debug APK with auto diagnostics
+        shell: bash
+        run: |
+          set +e
+          gradle assembleDebug --stacktrace --warning-mode all 2>&1 | tee build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          echo
+          echo "========== AUTO DEBUG =========="
+          if [ "$BUILD_STATUS" -eq 0 ]; then
+            echo "BUILD OK: APK berhasil dibuat."
+          else
+            echo "BUILD ERROR: Gradle gagal dengan kode $BUILD_STATUS."
+            echo
+            echo "--- ERROR UTAMA ---"
+            grep -niE 'What went wrong:|Execution failed|Could not resolve|Could not find|Unresolved reference|e: file:|error:|Caused by:|FAILURE: Build failed' build.log | tail -n 40 || true
+            echo
+            echo "--- 100 BARIS LOG TERAKHIR ---"
+            tail -n 100 build.log
+            echo
+            echo "--- PETUNJUK ---"
+            if grep -qiE 'Could not resolve|Could not find|UnknownHostException|timed out' build.log; then
+              echo "Periksa repository Maven, nama dependensi, versi, dan koneksi jaringan."
+            elif grep -qiE 'Unresolved reference|e: file:|Compilation error' build.log; then
+              echo "Periksa error Kotlin, import, nama API, dan versi library."
+            elif grep -qiE 'SDK location not found|Failed to find target|Android SDK' build.log; then
+              echo "Periksa konfigurasi Android SDK dan paket platform."
+            elif grep -qiE 'requires.*JDK|Unsupported class file|incompatible' build.log; then
+              echo "Periksa kompatibilitas Java, Gradle, plugin Android, dan dependensi."
+            else
+              echo "Gunakan bagian ERROR UTAMA dan log lengkap untuk menentukan perbaikan."
+            fi
+          fi
+
+          echo "================================"
+          exit "$BUILD_STATUS"
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SYSrescue-build-diagnostics
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SYSrescue-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+===== DOKUMENTASI =====
+--- README.md ---
+# otg-adb-file-manager
+
+Native Android Kotlin application for USB OTG ADB file management.
+
+## Target features
+
+- USB device detector and permission handling
+- ADB authorization and USB transport
+- Remote file browser for Device B
+- Multi-select files and folders
+- Transfer A -> B and B -> A
+- Destination picker
+- Progress, speed, cancellation and completion UI
+- GitHub Actions APK build
+
+## Current status
+
+Initial project scaffold only.
+
+The USB detector lists attached USB devices. It does not yet
+establish an ADB session, browse remote files or transfer data.
+
+## Requirements
+
+- JDK 17
+- Android SDK Platform 35
+- Android Gradle Plugin 8.13.2
+- Compatible Gradle installation
+
+## Build
+
+    gradle assembleDebug
+
+A valid Android SDK installation is required.
+
+===== REFERENSI USB / ADB / KADB =====
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:11:import android.hardware.usb.UsbDevice
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:12:import android.hardware.usb.UsbManager
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:35:    private val usbManager: UsbManager
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:36:        get() = getSystemService(Context.USB_SERVICE) as UsbManager
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:51:                    UsbManager.EXTRA_DEVICE, UsbDevice::class.java
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:55:                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:59:                UsbManager.EXTRA_PERMISSION_GRANTED, false
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:227:        var deviceToRequest: UsbDevice? = null
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:230:            val granted = usbManager.hasPermission(device)
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:283:    private fun requestUsbPermission(device: UsbDevice) {
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:284:        if (usbManager.hasPermission(device)) {
+app/src/main/java/com/terangbulan/sysrescue/MainActivity.kt:315:            usbManager.requestPermission(device, pendingIntent)
+app/src/main/AndroidManifest.xml:14:        <intent-filter><action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" /></intent-filter><meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/device_filter" /></activity>
+app/build.gradle.kts:25:    implementation("com.flyfishxu:kadb:2.1.5")
+
+===== PERUBAHAN DAN BACKUP =====
+ app/build.gradle.kts             |  5 ++---
+ app/src/main/AndroidManifest.xml | 19 ++++++-------------
+ 2 files changed, 8 insertions(+), 16 deletions(-)
+./.github/workflows/android.yml.bak
+./.github/workflows/android.yml.bak2
+./.github/workflows/android.yml.before-repair
+./.github/workflows/android.yml.before-sdk-final
+
+===== CATATAN =====
+Audit baca-saja; kode tidak diubah dan build tidak dijalankan.
+Jangan bagikan API key, vault, private key, atau keystore.

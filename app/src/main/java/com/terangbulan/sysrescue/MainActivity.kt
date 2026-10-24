@@ -20,6 +20,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.terangbulan.sysrescue.adb.UsbAdbSession
+import com.terangbulan.sysrescue.transfer.AdbSyncRepository
+import android.widget.EditText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +37,12 @@ class MainActivity : Activity() {
     private lateinit var devices: LinearLayout
     private lateinit var console: TextView
     private lateinit var logScroll: ScrollView
+    private lateinit var fileBrowserHeading: TextView
+    private lateinit var filePathInput: EditText
+    private lateinit var fileList: LinearLayout
+    private lateinit var fileStatus: TextView
+    private lateinit var fileScroll: ScrollView
+    private var listingFiles = false
 
     private val logLines = ArrayDeque<String>()
     private var permissionPending = false
@@ -154,6 +163,67 @@ class MainActivity : Activity() {
             addView(devices)
         }
 
+        fileBrowserHeading = TextView(this).apply {
+            text = "Browser File ADB"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 10, 0, 4)
+        }
+
+        filePathInput = EditText(this).apply {
+            setSingleLine(true)
+            hint = "Path perangkat, contoh /sdcard"
+            setText("/sdcard")
+            textSize = 14f
+        }
+
+        fileStatus = TextView(this).apply {
+            text = "Hubungkan ADB untuk memuat daftar file."
+            textSize = 12f
+            setPadding(0, 2, 0, 4)
+        }
+
+        fileList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        fileScroll = ScrollView(this).apply {
+            setBackgroundColor(0xFFF1F3F5.toInt())
+            addView(fileList)
+        }
+
+        val parentButton = Button(this).apply {
+            text = "NAIK FOLDER"
+            setOnClickListener {
+                val current = filePathInput.text.toString().trim()
+                val clean = current.trimEnd('/').ifBlank { "/" }
+                val parent = if (clean == "/" || !clean.contains("/")) {
+                    "/"
+                } else {
+                    clean.substringBeforeLast('/').ifBlank { "/" }
+                }
+                filePathInput.setText(parent)
+                loadRemoteFiles()
+            }
+        }
+
+        val reloadButton = Button(this).apply {
+            text = "MUAT ULANG"
+            setOnClickListener { loadRemoteFiles() }
+        }
+
+        val openPathButton = Button(this).apply {
+            text = "BUKA PATH"
+            setOnClickListener { loadRemoteFiles() }
+        }
+
+        val browserActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(parentButton, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(reloadButton, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(openPathButton, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+
         val consoleHeading = TextView(this).apply {
             text = "Console log"
             textSize = 18f
@@ -218,6 +288,16 @@ class MainActivity : Activity() {
         root.addView(refresh)
         root.addView(connectAdbButton)
         root.addView(disconnectAdbButton)
+        root.addView(fileBrowserHeading)
+        root.addView(filePathInput)
+        root.addView(browserActions)
+        root.addView(fileStatus)
+        root.addView(
+            fileScroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(230)
+            )
+        )
         root.addView(heading)
         root.addView(
             deviceScroll,
@@ -350,6 +430,96 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun loadRemoteFiles() {
+        if (listingFiles) return
+
+        val session = adbSession
+        if (session == null || !session.isConnected) {
+            fileStatus.text = "ADB belum terhubung."
+            log("FILE", "Tidak dapat memuat daftar: sesi ADB belum aktif")
+            return
+        }
+
+        val path = filePathInput.text.toString().trim()
+        if (path.isBlank() || !path.startsWith("/")) {
+            fileStatus.text = "Path harus berupa path absolut, misalnya /sdcard."
+            return
+        }
+
+        listingFiles = true
+        fileStatus.text = "Memuat $path ..."
+        fileList.removeAllViews()
+
+        activityScope.launch {
+            try {
+                val result = AdbSyncRepository(session).list(path)
+                if (isFinishing || isDestroyed) return@launch
+
+                fileList.removeAllViews()
+                if (result.isEmpty()) {
+                    fileStatus.text = "Direktori kosong: $path"
+                } else {
+                    fileStatus.text = "${result.size} item · $path"
+                }
+
+                result.forEach { item ->
+                    val row = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(12, 8, 12, 8)
+                        setBackgroundColor(0xFFFFFFFF.toInt())
+                    }
+
+                    val name = TextView(this@MainActivity).apply {
+                        text = (if (item.isDirectory) "📁  " else "📄  ") + item.name
+                        textSize = 15f
+                        typeface = Typeface.DEFAULT_BOLD
+                    }
+
+                    val detail = TextView(this@MainActivity).apply {
+                        text = if (item.isDirectory) {
+                            "Folder · ${item.path}"
+                        } else {
+                            "${formatBytes(item.sizeBytes)} · ${item.path}"
+                        }
+                        textSize = 11f
+                    }
+
+                    row.addView(name)
+                    row.addView(detail)
+
+                    if (item.isDirectory) {
+                        row.setOnClickListener {
+                            filePathInput.setText(item.path)
+                            loadRemoteFiles()
+                        }
+                    }
+                    fileList.addView(row)
+                }
+
+                log("FILE", "LIST berhasil: $path (${result.size} item)")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!isFinishing && !isDestroyed) {
+                    fileStatus.text =
+                        "Gagal membaca direktori: ${e.javaClass.simpleName}: ${e.message}"
+                    log("FILE ERROR", "${e.javaClass.simpleName}: ${e.message}")
+                }
+            } finally {
+                listingFiles = false
+            }
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val kb = bytes / 1024.0
+        if (kb < 1024) return String.format(Locale.getDefault(), "%.1f KB", kb)
+        val mb = kb / 1024.0
+        if (mb < 1024) return String.format(Locale.getDefault(), "%.1f MB", mb)
+        return String.format(Locale.getDefault(), "%.2f GB", mb / 1024.0)
+    }
+
     private fun connectAdb() {
         if (adbSession?.isConnected == true) {
             log("ADB", "Sesi sudah terhubung")
@@ -391,6 +561,8 @@ class MainActivity : Activity() {
                     disconnectAdbButton.isEnabled = true
                     status.text = "Handshake ADB berhasil."
                     log("ADB", "Handshake berhasil; autentikasi diterima")
+                    fileStatus.text = "ADB terhubung. Tekan MUAT ULANG untuk membuka /sdcard."
+                    loadRemoteFiles()
                 },
                 onFailure = { error ->
                     adbSession = null
@@ -419,6 +591,8 @@ class MainActivity : Activity() {
             if (!isFinishing && !isDestroyed) {
                 status.text = "ADB terputus."
                 log("ADB", "Sesi diputuskan")
+                fileStatus.text = "ADB terputus."
+                fileList.removeAllViews()
             }
         }
     }

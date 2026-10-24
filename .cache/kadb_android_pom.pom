@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <!-- This module was also published with a richer model, Gradle metadata,  -->
+  <!-- which should be used instead. Do not delete the following line which  -->
+  <!-- is to indicate to Gradle or any Gradle module metadata file consumer  -->
+  <!-- that they should prefer consuming it instead. -->
+  <!-- do_not_remove: published-with-gradle-metadata -->
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.flyfishxu</groupId>
+  <artifactId>kadb-android</artifactId>
+  <version>2.1.5</version>
+  <packaging>aar</packaging>
+  <name>Kadb</name>
+  <description>A modern and versatile Kotlin Multiplatform ADB client library that simplifies the interaction with Android devices.</description>
+  <url>https://github.com/flyfishxu/Kadb.git</url>
+  <licenses>
+    <license>
+      <name>Apache License 2.0</name>
+      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>flyfishxu</id>
+      <name>Flyfish Xu</name>
+      <email>flyfishxu@outlook.com</email>
+      <url>https://github.com/flyfishxu</url>
+      <organization>Flyfish Studio</organization>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:git://github.com/flyfishxu/Kadb.git</connection>
+    <developerConnection>scm:git:ssh://github.com/flyfishxu/Kadb.git</developerConnection>
+    <url>https://github.com/flyfishxu/Kadb.git</url>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>com.squareup.okio</groupId>
+      <artifactId>okio-jvm</artifactId>
+      <version>3.18.2</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-stdlib</artifactId>
+      <version>2.4.20</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.github.Flyfish233</groupId>
+      <artifactId>spake2-java</artifactId>
+      <version>1.1.1</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>androidx.documentfile</groupId>
+      <artifactId>documentfile</artifactId>
+      <version>1.1.0</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.lsposed.hiddenapibypass</groupId>
+      <artifactId>hiddenapibypass</artifactId>
+      <version>6.1</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.kotlinx</groupId>
+      <artifactId>kotlinx-coroutines-core-jvm</artifactId>
+      <version>1.11.0</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>1.86</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <version>1.86</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+</project>

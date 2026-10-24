@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var fileStatus: TextView
     private lateinit var fileScroll: ScrollView
     private var listingFiles = false
+    private var pendingFilePath: String? = null
 
     private val logLines = ArrayDeque<String>()
     private var permissionPending = false
@@ -116,6 +117,17 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(20, 20, 20, 12)
+        }
+
+        val pageScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(
+                root,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
         }
 
         val title = TextView(this).apply {
@@ -302,7 +314,7 @@ class MainActivity : Activity() {
         root.addView(
             deviceScroll,
             LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(120)
             )
         )
         root.addView(consoleHeading)
@@ -314,7 +326,7 @@ class MainActivity : Activity() {
             )
         )
 
-        setContentView(root)
+        setContentView(pageScroll)
     }
 
     private fun scanUsb(requestAutomatically: Boolean) {
@@ -431,7 +443,10 @@ class MainActivity : Activity() {
     }
 
     private fun loadRemoteFiles() {
-        if (listingFiles) return
+        if (listingFiles) {
+            pendingFilePath = filePathInput.text.toString().trim()
+            return
+        }
 
         val session = adbSession
         if (session == null || !session.isConnected) {
@@ -507,6 +522,12 @@ class MainActivity : Activity() {
                 }
             } finally {
                 listingFiles = false
+                val nextPath = pendingFilePath
+                pendingFilePath = null
+                if (nextPath != null && !isFinishing && !isDestroyed) {
+                    filePathInput.setText(nextPath)
+                    loadRemoteFiles()
+                }
             }
         }
     }

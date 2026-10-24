@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import com.tananaev.adblib.AdbConnection
+import com.tananaev.adblib.AdbStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -11,7 +12,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * Sesi ADB melalui USB Host.
- * I/O koneksi dijalankan pada Dispatchers.IO.
+ * Stream tambahan memakai koneksi ADB yang sama.
  */
 class UsbAdbSession(
     context: Context,
@@ -19,10 +20,8 @@ class UsbAdbSession(
 ) : AdbSession {
 
     private val appContext = context.applicationContext
-
     private val usbManager =
         appContext.getSystemService(Context.USB_SERVICE) as UsbManager
-
     private val identity = AdbIdentity(appContext)
 
     @Volatile
@@ -54,10 +53,7 @@ class UsbAdbSession(
                     )
 
                 try {
-                    rawSocket = UsbAdbSocket.open(
-                        device,
-                        usbConnection
-                    )
+                    rawSocket = UsbAdbSocket.open(device, usbConnection)
                 } catch (error: Exception) {
                     usbConnection.close()
                     throw error
@@ -82,7 +78,6 @@ class UsbAdbSession(
 
                 connection = openedConnection
                 connected = true
-
                 Result.success(Unit)
             } catch (error: Exception) {
                 connected = false
@@ -102,10 +97,29 @@ class UsbAdbSession(
             }
         }
 
+    /**
+     * Membuka service ADB pada koneksi USB yang sudah terautentikasi.
+     * Pemanggil wajib menutup stream setelah selesai.
+     */
+    suspend fun openStream(destination: String): AdbStream =
+        withContext(Dispatchers.IO) {
+            require(destination.isNotBlank()) {
+                "Destination ADB tidak boleh kosong"
+            }
+
+            val activeConnection = connection
+                ?: throw IOException("Sesi ADB belum terhubung")
+
+            if (!connected) {
+                throw IOException("Sesi ADB sudah terputus")
+            }
+
+            activeConnection.open(destination)
+        }
+
     override suspend fun disconnect() {
         withContext(Dispatchers.IO) {
             connected = false
-
             val oldConnection = connection
             connection = null
 

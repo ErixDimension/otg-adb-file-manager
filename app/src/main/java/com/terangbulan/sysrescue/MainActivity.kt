@@ -12,6 +12,9 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
+import android.database.Cursor
+import android.provider.DocumentsContract
+import android.net.Uri
 import android.graphics.Typeface
 import android.view.ViewGroup
 import android.widget.Button
@@ -45,6 +48,19 @@ class MainActivity : Activity() {
     private var listingFiles = false
     private var pendingFilePath: String? = null
 
+    // SYSRESCUE_SAF_FOUNDATION_V1
+    private val safPrefs by lazy {
+        getSharedPreferences("local_storage_saf", MODE_PRIVATE)
+    }
+    private var localTreeUri: Uri? = null
+
+    data class LocalDocumentEntry(
+        val name: String,
+        val uri: Uri,
+        val isDirectory: Boolean,
+        val sizeBytes: Long
+    )
+
     private val logLines = ArrayDeque<String>()
     private var permissionPending = false
     private var adbSession: UsbAdbSession? = null
@@ -61,6 +77,8 @@ class MainActivity : Activity() {
         private const val ACTION_USB_PERMISSION =
             "com.terangbulan.sysrescue.USB_PERMISSION"
         private const val MAX_LOG_LINES = 200
+        private const val REQUEST_LOCAL_TREE = 4107
+        private const val KEY_LOCAL_TREE_URI = "tree_uri"
     }
 
     private val permissionReceiver = object : BroadcastReceiver() {
@@ -98,6 +116,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         createUi()
+        restoreSafFolderUri()
 
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -236,6 +255,17 @@ class MainActivity : Activity() {
             addView(openPathButton, LinearLayout.LayoutParams(0, -2, 1f))
         }
 
+        // SYSRESCUE_SAF_UI_V1
+        val chooseLocalButton = Button(this).apply {
+            text = "DEVICE A — PILIH FOLDER LOKAL"
+            setOnClickListener { chooseLocalFolder() }
+        }
+
+        val showLocalButton = Button(this).apply {
+            text = "TAMPILKAN ISI LOKAL"
+            setOnClickListener { showLocalDocuments() }
+        }
+
         val consoleHeading = TextView(this).apply {
             text = "Console log"
             textSize = 18f
@@ -295,21 +325,39 @@ class MainActivity : Activity() {
             addView(console)
         }
 
+        val browserRoot = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(12, 12, 12, 12)
+        }
+        val browserScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(
+                browserRoot,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+
+        val backButton = Button(this).apply {
+            text = "← KEMBALI KE HALAMAN UTAMA"
+            setOnClickListener { setContentView(pageScroll) }
+        }
+        val browserButton = Button(this).apply {
+            text = "BROWSER FILE"
+            setOnClickListener {
+                setContentView(browserScroll)
+                loadRemoteFiles()
+            }
+        }
+
         root.addView(title)
         root.addView(status)
         root.addView(refresh)
         root.addView(connectAdbButton)
         root.addView(disconnectAdbButton)
-        root.addView(fileBrowserHeading)
-        root.addView(filePathInput)
-        root.addView(browserActions)
-        root.addView(fileStatus)
-        root.addView(
-            fileScroll,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(230)
-            )
-        )
+        root.addView(browserButton)
         root.addView(heading)
         root.addView(
             deviceScroll,
@@ -323,6 +371,20 @@ class MainActivity : Activity() {
             logScroll,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(190)
+            )
+        )
+
+        browserRoot.addView(backButton)
+        browserRoot.addView(fileBrowserHeading)
+        browserRoot.addView(chooseLocalButton)
+        browserRoot.addView(showLocalButton)
+        browserRoot.addView(filePathInput)
+        browserRoot.addView(browserActions)
+        browserRoot.addView(fileStatus)
+        browserRoot.addView(
+            fileScroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(480)
             )
         )
 
@@ -439,6 +501,155 @@ class MainActivity : Activity() {
                 "Gagal meminta izin USB: ${e.javaClass.simpleName}: ${e.message}"
             )
             status.text = "Gagal meminta izin USB. Periksa console log."
+        }
+    }
+
+
+    private fun chooseLocalFolder() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, REQUEST_LOCAL_TREE)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(
+        requestCode: Int, resultCode: Int, data: Intent?
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_LOCAL_TREE || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val flags = data.flags and (
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        )
+        try {
+            contentResolver.takePersistableUriPermission(uri, flags)
+            localTreeUri = uri
+            safPrefs.edit().putString(KEY_LOCAL_TREE_URI, uri.toString()).apply()
+            log("SAF", "Folder lokal dipilih; izin disimpan")
+        } catch (e: Exception) {
+            localTreeUri = null
+            safPrefs.edit().remove(KEY_LOCAL_TREE_URI).apply()
+            log("SAF ERROR", "Izin folder gagal disimpan: ${e.message}")
+        }
+    }
+
+    private fun restoreSafFolderUri() {
+        val saved = safPrefs.getString(KEY_LOCAL_TREE_URI, null) ?: return
+        val uri = runCatching { Uri.parse(saved) }.getOrNull() ?: return
+        if (contentResolver.persistedUriPermissions.any {
+                it.uri == uri && it.isReadPermission
+            }) {
+            localTreeUri = uri
+        } else {
+            safPrefs.edit().remove(KEY_LOCAL_TREE_URI).apply()
+        }
+    }
+
+    private fun listLocalDocuments(): List<LocalDocumentEntry> {
+        val treeUri = localTreeUri
+            ?: throw IllegalStateException("Pilih folder lokal terlebih dahulu")
+        val rootId = DocumentsContract.getTreeDocumentId(treeUri)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri, rootId
+        )
+        val result = mutableListOf<LocalDocumentEntry>()
+        contentResolver.query(
+            childrenUri,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE
+            ),
+            null, null, null
+        )?.use { cursor: Cursor ->
+            val idCol = cursor.getColumnIndexOrThrow(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID
+            )
+            val nameCol = cursor.getColumnIndexOrThrow(
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME
+            )
+            val mimeCol = cursor.getColumnIndexOrThrow(
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            )
+            val sizeCol = cursor.getColumnIndex(
+                DocumentsContract.Document.COLUMN_SIZE
+            )
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(idCol) ?: continue
+                val name = cursor.getString(nameCol) ?: "(tanpa nama)"
+                val mime = cursor.getString(mimeCol)
+                val size = if (sizeCol >= 0 && !cursor.isNull(sizeCol)) {
+                    cursor.getLong(sizeCol)
+                } else 0L
+                result.add(
+                    LocalDocumentEntry(
+                        name,
+                        DocumentsContract.buildDocumentUriUsingTree(treeUri, id),
+                        mime == DocumentsContract.Document.MIME_TYPE_DIR,
+                        size
+                    )
+                )
+            }
+        } ?: throw IllegalStateException("Folder SAF tidak dapat dibaca")
+        return result.sortedWith(
+            compareByDescending<LocalDocumentEntry> { it.isDirectory }
+                .thenBy { it.name.lowercase(java.util.Locale.ROOT) }
+        )
+    }
+
+    private fun showLocalDocuments() {
+        try {
+            val entries = listLocalDocuments()
+            fileList.removeAllViews()
+
+            fileStatus.text =
+                "DEVICE A — ${entries.size} item di folder lokal terpilih."
+
+            if (entries.isEmpty()) {
+                fileList.addView(TextView(this).apply {
+                    text = "Folder kosong."
+                    setPadding(12, 12, 12, 12)
+                })
+                return
+            }
+
+            entries.forEach { entry ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(12, 10, 12, 10)
+                    setBackgroundColor(
+                        if (entry.isDirectory) 0xFFE5EAF0.toInt()
+                        else 0xFFFFFFFF.toInt()
+                    )
+                }
+
+                row.addView(TextView(this).apply {
+                    text = (if (entry.isDirectory) "[DIR] " else "[FILE] ") +
+                        entry.name
+                    textSize = 14f
+                })
+
+                if (!entry.isDirectory) {
+                    row.addView(TextView(this).apply {
+                        text = "${entry.sizeBytes} byte"
+                        textSize = 11f
+                    })
+                }
+
+                fileList.addView(row)
+            }
+            log("SAF", "Daftar lokal dimuat: ${entries.size} item")
+        } catch (e: Exception) {
+            fileStatus.text = "Gagal membaca folder lokal: ${e.message}"
+            log("SAF ERROR", "Gagal membaca folder: ${e.message}")
         }
     }
 

@@ -1,12 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
     <uses-feature
         android:name="android.hardware.usb.host"
         android:required="false" />
 
     <application
         android:allowBackup="false"
-        android:label="OTG ADB File Manager"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:label="SYSrescue"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:icon="@drawable/sysrescue_logo">
 
         <activity
             android:name=".MainActivity"

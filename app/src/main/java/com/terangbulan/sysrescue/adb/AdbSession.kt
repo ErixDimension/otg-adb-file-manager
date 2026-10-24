@@ -1,4 +1,4 @@
-package com.example.otgmanager.adb
+package com.terangbulan.sysrescue.adb
 
 /**
  * Kontrak sesi ADB.

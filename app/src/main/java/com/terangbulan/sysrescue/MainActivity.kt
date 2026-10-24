@@ -1,4 +1,4 @@
-package com.example.otgmanager
+package com.terangbulan.sysrescue
 
 import android.app.Activity
 import android.os.Bundle

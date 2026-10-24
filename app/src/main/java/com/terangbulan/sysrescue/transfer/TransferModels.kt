@@ -1,4 +1,4 @@
-package com.example.otgmanager.transfer
+package com.terangbulan.sysrescue.transfer
 
 enum class TransferDirection {
     DEVICE_A_TO_B,

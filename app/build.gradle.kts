@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.otgmanager"
+    namespace = "com.terangbulan.sysrescue"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.otgmanager"
+        applicationId = "com.terangbulan.sysrescue"
         minSdk = 23
         targetSdk = 28
         versionCode = 1

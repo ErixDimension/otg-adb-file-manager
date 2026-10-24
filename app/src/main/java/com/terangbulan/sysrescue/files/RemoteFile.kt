@@ -1,4 +1,4 @@
-package com.example.otgmanager.files
+package com.terangbulan.sysrescue.files
 
 data class RemoteFile(
     val name: String,

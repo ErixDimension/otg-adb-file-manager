@@ -19,6 +19,12 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.terangbulan.sysrescue.adb.UsbAdbSession
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -31,6 +37,12 @@ class MainActivity : Activity() {
 
     private val logLines = ArrayDeque<String>()
     private var permissionPending = false
+    private var adbSession: UsbAdbSession? = null
+    private val activityScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private lateinit var connectAdbButton: Button
+    private lateinit var disconnectAdbButton: Button
 
     private val usbManager: UsbManager
         get() = getSystemService(Context.USB_SERVICE) as UsbManager
@@ -116,6 +128,17 @@ class MainActivity : Activity() {
             }
         }
 
+        connectAdbButton = Button(this).apply {
+            text = "SAMBUNG ADB"
+            setOnClickListener { connectAdb() }
+        }
+
+        disconnectAdbButton = Button(this).apply {
+            text = "PUTUSKAN ADB"
+            isEnabled = false
+            setOnClickListener { disconnectAdb() }
+        }
+
         val heading = TextView(this).apply {
             text = "Perangkat USB"
             textSize = 18f
@@ -193,6 +216,8 @@ class MainActivity : Activity() {
         root.addView(title)
         root.addView(status)
         root.addView(refresh)
+        root.addView(connectAdbButton)
+        root.addView(disconnectAdbButton)
         root.addView(heading)
         root.addView(
             deviceScroll,
@@ -325,6 +350,79 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun connectAdb() {
+        if (adbSession?.isConnected == true) {
+            log("ADB", "Sesi sudah terhubung")
+            return
+        }
+
+        val device = usbManager.deviceList.values.firstOrNull {
+            usbManager.hasPermission(it)
+        }
+
+        if (device == null) {
+            log("ADB", "Tidak ada perangkat USB dengan izin aktif")
+            status.text = "Pilih perangkat USB dan berikan izin terlebih dahulu."
+            return
+        }
+
+        val session = UsbAdbSession(this, device)
+        adbSession = session
+        connectAdbButton.isEnabled = false
+        status.text = "Menghubungkan ADB..."
+
+        log(
+            "ADB",
+            "Memulai handshake: ${device.deviceName}, " +
+                "VID=${device.vendorId}, PID=${device.productId}"
+        )
+
+        activityScope.launch {
+            val result = session.connect()
+
+            if (isFinishing || isDestroyed) {
+                session.disconnect()
+                return@launch
+            }
+
+            result.fold(
+                onSuccess = {
+                    connectAdbButton.isEnabled = false
+                    disconnectAdbButton.isEnabled = true
+                    status.text = "Handshake ADB berhasil."
+                    log("ADB", "Handshake berhasil; autentikasi diterima")
+                },
+                onFailure = { error ->
+                    adbSession = null
+                    connectAdbButton.isEnabled = true
+                    disconnectAdbButton.isEnabled = false
+                    status.text = "Koneksi ADB gagal. Periksa console log."
+                    log(
+                        "ADB ERROR",
+                        "${error.javaClass.simpleName}: ${error.message}"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun disconnectAdb() {
+        val session = adbSession
+        adbSession = null
+
+        disconnectAdbButton.isEnabled = false
+        connectAdbButton.isEnabled = true
+        status.text = "Memutuskan koneksi ADB..."
+
+        activityScope.launch {
+            session?.disconnect()
+            if (!isFinishing && !isDestroyed) {
+                status.text = "ADB terputus."
+                log("ADB", "Sesi diputuskan")
+            }
+        }
+    }
+
     private fun log(tag: String, message: String) {
         val time = SimpleDateFormat(
             "HH:mm:ss", Locale.getDefault()
@@ -349,6 +447,18 @@ class MainActivity : Activity() {
         (value * resources.displayMetrics.density + 0.5f).toInt()
 
     override fun onDestroy() {
+        val session = adbSession
+        adbSession = null
+
+        // Jalankan disconnect pada scope independen agar tidak
+        // ikut dibatalkan ketika activityScope dihentikan.
+        if (session != null) {
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                session.disconnect()
+            }
+        }
+        activityScope.cancel()
+
         try {
             unregisterReceiver(permissionReceiver)
         } catch (_: Exception) {
